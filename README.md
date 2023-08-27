@@ -1,4 +1,4 @@
-# Выпускной проект курса OTUS Administrator Linux Professional.
+![Снимок экрана от 2023-08-24 13-29-47](https://github.com/skyfly535/29WH_MainProject/assets/114483769/10a64e01-c982-4881-b711-3767fa583473)# Выпускной проект курса OTUS Administrator Linux Professional.
 
 Задание:
 
@@ -30,7 +30,7 @@
 
 ВМ с именем: `Grafana` выполняет роли сервера централизованного сбора метрик и логов с Web сервера и сервера алертинга и мониторинга.
 
-
+![Схнма проекта](https://github.com/skyfly535/29WH_MainProject/assets/114483769/5628a317-a9d3-4ad6-8ca3-47680f967d3a)
 
 Схема стенда итогового проекта.
 
