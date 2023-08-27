@@ -1,0 +1,83 @@
+version: '3.3' # docker-compose для Grafana
+services:
+
+  prometheus: # контейнер Prometheus
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus:/etc/prometheus/
+    container_name: prometheus
+    hostname: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - 9090:9090
+    restart: unless-stopped
+    environment:
+      TZ: "Asia/Vladivostok"
+    networks:
+      - default
+
+  grafana: # контейнер Grafana
+    image: grafana/grafana
+    user: root
+    depends_on:
+      - prometheus
+    ports:
+      - 3000:3000
+    volumes:
+      - ./grafana:/var/lib/grafana
+      - ./grafana/provisioning/:/etc/grafana/provisioning/
+    container_name: grafana
+    hostname: grafana
+    restart: unless-stopped
+    environment:
+      TZ: "Asia/Vladivostok"
+    networks:
+      - default
+
+  alertmanager-bot: # контейнер alertmanager-bot (для посылки сообщений в Telegram)
+    command:
+      - --alertmanager.url=http://alertmanager:9093
+      - --log.level=info
+      - --store=bolt
+      - --bolt.path=/data/bot.db
+      - --telegram.admin= #(**********)
+      - --telegram.token= #(**********:***********************************)
+    image: metalmatze/alertmanager-bot:0.4.3
+    user: root
+    ports:
+      - 8080:8080
+    container_name: alertmanager-bot
+    hostname: alertmanager-bot
+    environment:
+      TZ: "Asia/Vladivostok"
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    networks:
+      - default
+
+  alertmanager: # контейнер alertmanager 
+    image: prom/alertmanager:v0.21.0
+    user: root
+    ports:
+      - 9093:9093
+    volumes:
+      - ./alertmanager/:/etc/alertmanager/
+    container_name: alertmanager
+    hostname: alertmanager
+    environment:
+      TZ: "Asia/Vladivostok"
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/etc/alertmanager/data'
+    networks:
+      - default
+
+networks: # тип сетевого соединения для всех контейнеров
+  default:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16

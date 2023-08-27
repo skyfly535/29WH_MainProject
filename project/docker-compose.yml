@@ -1,0 +1,193 @@
+version: '3.3' # docker-compose для DynamicWeb
+services:
+  database: # контейнер MySQL Master
+    image: mysql/mysql-server:8.0 
+    container_name: database
+    hostname: database
+    ports:
+      - "3307:3306"
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME} # Имя и пароль базы данных будут задаваться в отдельном .env файле
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    volumes:
+      - ./dbdata:/var/lib/mysql # Чтобы данные базы не пропали при остановке/удалении контейнера, будем сохранять их на хост-машине
+    command: ["mysqld",
+      "--server-id=1",
+      "--log-bin=mysql-bin-1.log",
+      "--enforce-gtid-consistency=ON",
+      "--log-slave-updates=ON",
+      "--gtid-mode=ON",
+      "--transaction-write-set-extraction=XXHASH64",
+      "--binlog-checksum=NONE",
+      "--master-info-repository=TABLE",
+      "--relay-log-info-repository=TABLE",
+      "--plugin-load=group_replication.so",
+      "--relay-log-recovery=ON",
+      "--loose-group-replication-start-on-boot=OFF",
+      "--loose-group-replication-group-name=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "--loose-group-replication-local-address=database:6606",
+      "--loose-group-replication-group-seeds=database:6606,node2:6606,node3:6606",
+      "--loose-group-replication-single-primary-mode=ON",
+      "--loose-group-replication-enforce-update-everywhere-checks=OFF",
+      "--default-authentication-plugin=mysql_native_password"]
+    healthcheck:
+      test: "mysqladmin ping -u root -p$${MYSQL_ROOT_PASSWORD}"
+      interval: 2s
+      retries: 20
+    networks:
+      - app-network
+
+  node2: # контейнер MySQL Slave (первый)
+    image: mysql/mysql-server:8.0
+    container_name: node2
+    hostname: node2
+    ports:
+      - "3308:3306"
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    command: ["mysqld",
+      "--server-id=2",
+      "--log-bin=mysql-bin-1.log",
+      "--enforce-gtid-consistency=ON",
+      "--log-slave-updates=ON",
+      "--gtid-mode=ON",
+      "--transaction-write-set-extraction=XXHASH64",
+      "--binlog-checksum=NONE",
+      "--master-info-repository=TABLE",
+      "--relay-log-info-repository=TABLE",
+      "--plugin-load=group_replication.so",
+      "--relay-log-recovery=ON",
+      "--loose-group-replication-start-on-boot=OFF",
+      "--loose-group-replication-group-name=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "--loose-group-replication-local-address=node2:6606",
+      "--loose-group-replication-group-seeds=database:6606,node2:6606,node3:6606",
+      "--loose-group-replication-single-primary-mode=ON",
+      "--loose-group-replication-enforce-update-everywhere-checks=OFF"]
+    healthcheck:
+      test: "mysqladmin ping -u root -p$${MYSQL_ROOT_PASSWORD}"
+      interval: 2s
+      retries: 20
+    networks:
+      - app-network
+
+  node3: # контейнер MySQL Slave (второй)
+    image: mysql/mysql-server:8.0
+    container_name: node3
+    hostname: node3
+    ports:
+      - "3309:3306"
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    command: ["mysqld",
+      "--server-id=3",
+      "--log-bin=mysql-bin-1.log",
+      "--enforce-gtid-consistency=ON",
+      "--log-slave-updates=ON",
+      "--gtid-mode=ON",
+      "--transaction-write-set-extraction=XXHASH64",
+      "--binlog-checksum=NONE",
+      "--master-info-repository=TABLE",
+      "--relay-log-info-repository=TABLE",
+      "--plugin-load=group_replication.so",
+      "--relay-log-recovery=ON",
+      "--loose-group-replication-start-on-boot=OFF",
+      "--loose-group-replication-group-name=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "--loose-group-replication-local-address=node3:6606",
+      "--loose-group-replication-group-seeds=database:6606,node2:6606,node3:6606",
+      "--loose-group-replication-single-primary-mode=ON",
+      "--loose-group-replication-enforce-update-everywhere-checks=OFF"]
+    healthcheck:
+      test: "mysqladmin ping -u root -p$${MYSQL_ROOT_PASSWORD}"
+      interval: 2s
+      retries: 20
+    networks:
+      - app-network
+
+
+  wordpress: #Контейнер wordpress
+    image: wordpress:5.1.1-fpm-alpine # официальный образ от разработчиков
+    container_name: wordpress
+    restart: unless-stopped
+    # на странице образа в docker hub написано, какие можно задать переменные контейнеру https://hub.docker.com/_/wordpress
+    environment: # переменные окружения
+      WORDPRESS_DB_HOST: database
+      WORDPRESS_DB_NAME: "${DB_NAME}" # Также импортируем переменные из .env
+      WORDPRESS_DB_USER: wpuser
+      WORDPRESS_DB_PASSWORD: "${DB_ROOT_PASSWORD}"
+    volumes:
+      - ./wordpress:/var/www/html # сохраняем приложение на хост машине
+    networks:
+      - app-network
+    depends_on:
+      - database # контейнер wordpress дождется запуска БД
+      - node2
+      - node3
+
+  app:
+    build: ./python # для нашего приложения нужны зависимости, поэтому собираем свой образ на базе python:3.8.3
+    container_name: app
+    restart: always
+    env_file:
+      - .env # импортируем в контейнер переменные из .env
+    command:
+      "gunicorn --workers=2 --bind=0.0.0.0:8000 mysite.wsgi:application" # команда для запуска django проекта, приложение будет работать на 8000 порту контейнера
+    networks:
+      - app-network
+
+  node: #Контейнер nodejs
+    image: node:16.13.2-alpine3.15
+    container_name: node
+    working_dir: /opt/server # переназначим рабочую директорию для удобства
+    volumes:
+      - ./node:/opt/server # пробрасываем приложение в директорию контейнера
+    command: node test.js # запуск приложения
+    networks:
+      - app-network
+
+  nginx: #Контейнер nginx (билдим свой)
+    build: ./nginx-conf
+    container_name: nginx
+    restart: unless-stopped
+    # Т.к. все запросы к приложениям будут проходить через nginx, пробросим пробросим необходимые порты.
+    ports:
+      - 80:80
+      - 443:443
+      - 514:514 # порт для rsyslog
+    volumes:
+    # будет использоваться php-fpm, необходимо смонтировать статические файлы wordpress :
+      - ./wordpress:/var/www/html
+    networks:
+      - app-network
+    depends_on: # nginx будет запускаться после всех приложений
+      - wordpress
+      - app
+      - node
+
+  node-exporter: #Контейнер node-exporter для сбора метрик
+    image: prom/node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    container_name: exporter
+    hostname: exporter
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.filesystem.ignored-mount-points
+      - ^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)
+    ports:
+      - 9100:9100
+    restart: unless-stopped
+    environment:
+      TZ: "Asia/Vladivostok"
+    networks:
+       - app-network
+
+networks: # тип сетевого соединения мост для всех контейнеров
+  app-network:
+    driver: bridge
+  

@@ -1,0 +1,179 @@
+---
+- name: Conf dynamicWeb server
+  hosts: all # все хосты
+  become: yes # Установка Docker через sudo
+  gather_facts: yes
+  tasks: # Перечисляем задачи которые выполнит наш playbook
+  
+  
+  - name: Install docker packages # устанавливаем пакеты необходимые для докера 
+    become: yes
+    apt:
+      name: "{{ item }}"
+      state: present
+      update_cache: yes
+    with_items:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - software-properties-common
+      - mc
+    tags:
+      - docker
+
+  - name: Add Docker s official GPG key # добавляем GPG ключи для Docker
+    become: yes
+    apt_key:
+      url: https://download.docker.com/linux/ubuntu/gpg
+      state: present
+    tags:
+      - docker
+
+  - name: Verify that we have the key with the fingerprint # проверяем наличие ключа с "отпечатком пальца"
+    become: yes    
+    apt_key:
+      id: 0EBFCD88
+      state: present
+    tags:
+      - docker
+
+  - name: Set up the stable repository # добавляем репозиторий докера
+    become: yes    
+    apt_repository:
+      repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu xenial stable
+      state: present
+      update_cache: yes
+    tags:
+      - docker
+      
+  - name: Update apt packages # обновление базы данных пакетного менеджера
+    become: yes    
+    apt:
+      update_cache: yes
+    tags:
+      - docker
+
+  - name: Install docker # установка docker
+    become: yes    
+    apt:
+      name: docker-ce
+      state: present
+      update_cache: yes
+    tags:
+      - docker
+
+  - name: Add remote "vagrant" user to "docker" group # добавляем пользователя vagrant к группе безопасности docker
+    become: yes
+    user:
+      name: vagrant
+      group: "docker"
+      append: yes
+    tags:
+      - docker 
+      
+  - name: Install docker-compose # установка docker-compose
+    become: yes
+    get_url:
+      url : https://github.com/docker/compose/releases/download/1.25.1-rc1/docker-compose-Linux-x86_64
+      dest: /usr/local/bin/docker-compose
+      mode: 0777
+          
+  - name: Copy project # Копируем проект с хост машины в созданный каталог через vagrant
+    copy: src=project dest=/home/vagrant
+
+  - name: reset ssh connection # чтобы применились права на использование docker, необходимо перелогиниться
+    meta: reset_connection
+
+    
+
+  - name: Config node DynamicWeb # конфигурируем DynamicWeb
+    block:
+      
+      - name: Run container DynamicWeb # производим развертывание необходимых контейнеров через docker-compose.yml
+        shell:
+          cmd: "docker-compose -f docker-compose.yml up -d"
+          chdir: /home/vagrant/project
+    
+      - name: Run replication MySQL # производим необходимые настройки групповой репликации MySQL контейнеров Docker
+        shell:
+          cmd: "bash ./travis-ci/create_gr.sh"
+          chdir: /home/vagrant/project
+
+      - name: Allow everything and disabled UFW # выключаем утилиту UFW
+        service: name=ufw state=stopped enabled=no
+
+      - name: Install iptables # устаннавливаем iptables
+        become: yes    
+        apt:
+          name: iptables
+          state: present
+          update_cache: yes
+        tags:
+          - iptables
+
+      - name: Install iptables-persistent # устаннавливаем iptables-persistent для сохранения правил 
+        become: yes
+        apt: 
+          name: iptables-persistent
+          state: present
+          update_cache: yes
+        tags:
+          - iptables-persistent
+      
+      - name: Allow everything and disabled UFW # выключаем утилиту UFW
+        service: name=iptables state=started enabled=yes
+
+      - name: rule restricts external access from all IP addresses except 10.0.2.2 # ограничиваем внешний доступ со всех IP-адресов, кроме 10.0.2.2
+        become: yes
+        shell: iptables -I DOCKER-USER -i eth0 ! -s 10.0.2.2 -j DROP
+
+      - name: reload iptables # сохраняем конфиг iptables
+        become: yes
+        shell: iptables-save > /etc/iptables/rules.v4
+      
+      - name: Changing perm of "dampSQL.sh", adding "+x" # даем права на исполнение файла скрипата создания дампв БД
+        file: dest=/home/vagrant/project/dampSQL.sh mode=a+x
+
+      - name: Creates an entry like "PATH=/opt/bin" on top of crontab # добавляем необходимые для выполнения скрипата создания дампа БД пути в переменную окружения PATH для демона cron
+        ansible.builtin.cron:
+          name: PATH
+          env: yes
+          job: /usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+      - name: Creates everyday backup cronjob # помещаем скрипт создания дампа БД в cron (damp будет создаваться ежедневно в 3 ночи с Slave сервера)
+        ansible.builtin.cron:
+          name: "dampSQL"
+          state: present
+          minute: "0"
+          hour: "3"
+          day: "*"
+          month: "*"
+          weekday: "*"
+          job: '/home/vagrant/project/dampSQL.sh'
+
+    when: (ansible_hostname == "DynamicWeb")
+  
+  - name: Config node Grafana # конфигурируем DynamicWeb
+    block:
+      
+      - name: Run container Grafana # производим развертывание необходимых контейнеров через docker-compose.yml
+        shell:
+          cmd: "docker-compose -f docker-compose.yml up -d"
+          chdir: /home/vagrant/project/prometheus_stack
+
+      - name: template rsyslog.conf # tasks для формирования нужного файла config для rsyslog
+        ansible.builtin.copy:
+          src: ./project/nginx-conf/rsyslog.conf
+          dest: /etc/rsyslog.conf
+        notify: restarted rsyslog #  перезапуск rsyslog
+
+    when: (ansible_hostname == "Grafana")
+
+  handlers:
+
+    - name: restarted rsyslog # handler на перезапуск rsyslog
+      become: true
+      ansible.builtin.systemd:
+        service: rsyslog
+        state: restarted
+        enabled: true
